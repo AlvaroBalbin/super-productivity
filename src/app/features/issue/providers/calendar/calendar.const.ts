@@ -73,6 +73,14 @@ export const CALENDAR_FORM_CFG_NEW: ConfigFormSection<IssueProviderCalendar> = {
       },
     },
     {
+      type: 'input',
+      key: 'name',
+      templateOptions: {
+        type: 'text',
+        label: T.GCF.CALENDARS.CAL_NAME,
+      },
+    },
+    {
       type: 'duration',
       key: 'checkUpdatesEvery',
       hooks: {

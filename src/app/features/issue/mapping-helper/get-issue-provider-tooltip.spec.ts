@@ -1,4 +1,31 @@
-import { sanitizeIcalUrlForDisplay } from './get-issue-provider-tooltip';
+import {
+  getIssueProviderInitials,
+  getIssueProviderTooltip,
+  sanitizeIcalUrlForDisplay,
+} from './get-issue-provider-tooltip';
+import { IssueProviderCaldav, IssueProviderCalendar } from '../issue.model';
+
+const CALDAV_PROVIDER: IssueProviderCaldav = {
+  id: 'test-provider',
+  issueProviderKey: 'CALDAV',
+  caldavUrl: 'https://cal.example.com/dav',
+  resourceName: 'Household',
+  username: 'user',
+  password: 'pass',
+  categoryFilter: null,
+  isEnabled: true,
+};
+
+const CALENDAR_PROVIDER: IssueProviderCalendar = {
+  id: 'test-cal-provider',
+  issueProviderKey: 'ICAL',
+  icalUrl: 'https://cloud.example.com/remote.php/dav/public-calendars/abc?export',
+  name: 'Family',
+  isAutoImportForCurrentDay: false,
+  checkUpdatesEvery: 60000,
+  showBannerBeforeThreshold: null,
+  isEnabled: true,
+};
 
 describe('sanitizeIcalUrlForDisplay', () => {
   it('returns hostname for https:// URLs', () => {
@@ -83,5 +110,47 @@ describe('sanitizeIcalUrlForDisplay', () => {
 
   it('returns iCal placeholder for undefined input', () => {
     expect(sanitizeIcalUrlForDisplay(undefined)).toBe('iCal');
+  });
+});
+
+describe('getIssueProviderTooltip', () => {
+  it('prefers the CalDAV resource name over the URL', () => {
+    expect(getIssueProviderTooltip(CALDAV_PROVIDER)).toBe('Household');
+  });
+
+  it('falls back to the CalDAV URL when no resource name is set', () => {
+    expect(getIssueProviderTooltip({ ...CALDAV_PROVIDER, resourceName: null })).toBe(
+      'https://cal.example.com/dav',
+    );
+  });
+
+  it('prefers the calendar name over the iCal url', () => {
+    expect(getIssueProviderTooltip(CALENDAR_PROVIDER)).toBe('Family');
+  });
+
+  it('falls back to the iCal host when no calendar name is set', () => {
+    expect(getIssueProviderTooltip({ ...CALENDAR_PROVIDER, name: null })).toBe(
+      'cloud.example.com',
+    );
+  });
+});
+
+describe('getIssueProviderInitials', () => {
+  it('derives CalDAV initials from the resource name', () => {
+    expect(getIssueProviderInitials(CALDAV_PROVIDER)).toBe('HO');
+  });
+
+  it('derives CalDAV initials from the URL when no resource name is set', () => {
+    expect(getIssueProviderInitials({ ...CALDAV_PROVIDER, resourceName: null })).toBe(
+      'CA',
+    );
+  });
+
+  it('derives calendar initials from the calendar name', () => {
+    expect(getIssueProviderInitials(CALENDAR_PROVIDER)).toBe('FA');
+  });
+
+  it('derives calendar initials from the iCal host when no name is set', () => {
+    expect(getIssueProviderInitials({ ...CALENDAR_PROVIDER, name: null })).toBe('CL');
   });
 });

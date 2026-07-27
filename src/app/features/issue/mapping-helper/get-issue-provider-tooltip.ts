@@ -56,9 +56,9 @@ export const getIssueProviderTooltip = (issueProvider: IssueProvider): string =>
       case 'GITLAB':
         return issueProvider.project;
       case 'CALDAV':
-        return issueProvider.caldavUrl;
+        return issueProvider.resourceName || issueProvider.caldavUrl;
       case 'ICAL':
-        return sanitizeIcalUrlForDisplay(issueProvider.icalUrl);
+        return issueProvider.name || sanitizeIcalUrlForDisplay(issueProvider.icalUrl);
       case 'REDMINE':
         return issueProvider.projectId;
       case 'OPEN_PROJECT':
@@ -115,12 +115,15 @@ export const getIssueProviderInitials = (
         ?.substring(0, 2)
         ?.toUpperCase();
     case 'CALDAV':
-      return issueProvider.caldavUrl
-        ?.replace('https://', '')
-        ?.replace('http://', '')
-        ?.substring(0, 2)
-        ?.toUpperCase();
+      return issueProvider.resourceName
+        ? issueProvider.resourceName.substring(0, 2).toUpperCase()
+        : issueProvider.caldavUrl
+            ?.replace('https://', '')
+            ?.replace('http://', '')
+            ?.substring(0, 2)
+            ?.toUpperCase();
     case 'ICAL':
+      if (issueProvider.name) return issueProvider.name.substring(0, 2).toUpperCase();
       if (issueProvider.icalUrl?.includes('google')) return 'G';
       if (issueProvider.icalUrl?.includes('office365')) return 'MS';
       // Route through the sanitizer so credentials embedded in user/path/query
