@@ -219,19 +219,21 @@ object ReminderNotificationHelper {
 
         val category = if (useAlarmStyle) NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_REMINDER
 
+        val labels = ReminderNotificationLabels.load(context)
+
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_sp)
             .setContentTitle(title)
             .setContentText(when (reminderType) {
-                "TASK" -> "Task reminder"
-                "DUE_DATE" -> "Due date reminder"
-                else -> "Task reminder"
+                "TASK" -> labels.taskReminder
+                "DUE_DATE" -> labels.dueDateReminder
+                else -> labels.taskReminder
             })
             .setContentIntent(contentPendingIntent)
             .setAutoCancel(true)
-            .addAction(0, "Done", donePendingIntent)
-            .addAction(0, "Snooze 10m", snoozePendingIntent)
-            .addAction(0, "Snooze 1h", snooze1hPendingIntent)
+            .addAction(0, labels.done, donePendingIntent)
+            .addAction(0, labels.snooze10m, snoozePendingIntent)
+            .addAction(0, labels.snooze1h, snooze1hPendingIntent)
             .setGroup(GROUP_KEY)
             .setOngoing(isOngoing)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -245,7 +247,7 @@ object ReminderNotificationHelper {
             val summaryNotification = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_stat_sp)
                 .setContentTitle("Super Productivity")
-                .setContentText("Task reminders")
+                .setContentText(labels.summary)
                 .setGroup(GROUP_KEY)
                 .setGroupSummary(true)
                 .setAutoCancel(true)

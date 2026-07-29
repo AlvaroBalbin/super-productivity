@@ -1,10 +1,15 @@
 import { inject, Injectable } from '@angular/core';
 import { createEffect } from '@ngrx/effects';
 import { tap } from 'rxjs/operators';
+import { TranslateService } from '@ngx-translate/core';
 import { SnackService } from '../../../core/snack/snack.service';
 import { IS_ANDROID_WEB_VIEW } from '../../../util/is-android-web-view';
 import { DroidLog } from '../../../core/log';
 import { androidInterface, AndroidShareData } from '../android-interface';
+import {
+  ANDROID_REMINDER_LABELS_KEY,
+  AndroidReminderLabels,
+} from '../android-reminder-labels.model';
 import { TaskService } from '../../tasks/task.service';
 import { TaskAttachmentService } from '../../tasks/task-attachment/task-attachment.service';
 import { T } from '../../../t.const';
@@ -17,6 +22,7 @@ export class AndroidEffects {
   private _snackService = inject(SnackService);
   private _taskService = inject(TaskService);
   private _taskAttachmentService = inject(TaskAttachmentService);
+  private _translateService = inject(TranslateService);
 
   handleShare$ =
     IS_ANDROID_WEB_VIEW &&
@@ -178,7 +184,42 @@ export class AndroidEffects {
         ),
       { dispatch: false },
     );
+
+  // Keep the natively rendered reminder notifications in the user's language
+  pushReminderLabels$ =
+    IS_ANDROID_WEB_VIEW &&
+    createEffect(
+      () =>
+        this._translateService.onLangChange.pipe(
+          tap(async () => {
+            try {
+              await androidInterface.saveToDbWrapped(
+                ANDROID_REMINDER_LABELS_KEY,
+                JSON.stringify(buildReminderLabels(this._translateService)),
+              );
+            } catch (e) {
+              DroidLog.err('Failed to push reminder notification labels', e);
+            }
+          }),
+        ),
+      { dispatch: false },
+    );
 }
+
+/**
+ * Translate the strings the native reminder notification is built from.
+ * Exported for direct testing — the effect itself is gated by IS_ANDROID_WEB_VIEW.
+ */
+export const buildReminderLabels = (
+  translateService: TranslateService,
+): AndroidReminderLabels => ({
+  taskReminder: translateService.instant(T.NOTIFICATION.TASK_REMINDER),
+  dueDateReminder: translateService.instant(T.NOTIFICATION.DUE_DATE_REMINDER),
+  done: 'Done',
+  snooze10m: translateService.instant(T.NOTIFICATION.SNOOZE_10M),
+  snooze1h: translateService.instant(T.NOTIFICATION.SNOOZE_1H),
+  summary: translateService.instant(T.NOTIFICATION.TASK_REMINDERS),
+});
 
 /**
  * Build a meaningful task title from Android share intent data.

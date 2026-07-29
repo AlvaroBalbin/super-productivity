@@ -1,4 +1,58 @@
-import { buildTaskTitle } from './android.effects';
+import { TestBed } from '@angular/core/testing';
+import { TranslateModule, TranslateService } from '@ngx-translate/core';
+import { buildReminderLabels, buildTaskTitle } from './android.effects';
+import EN_TRANSLATIONS from '../../../../assets/i18n/en.json';
+
+/**
+ * #9344: the reminder notification is rendered natively, so its strings never went
+ * through the translations and stayed English whatever language was picked.
+ */
+describe('buildReminderLabels', () => {
+  let translateService: TranslateService;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [TranslateModule.forRoot()],
+    });
+    translateService = TestBed.inject(TranslateService);
+    translateService.setTranslation('en', EN_TRANSLATIONS);
+    translateService.use('en');
+  });
+
+  it('builds the labels the native side falls back to for English', () => {
+    expect(buildReminderLabels(translateService)).toEqual({
+      taskReminder: 'Task reminder',
+      dueDateReminder: 'Due date reminder',
+      done: 'Done',
+      snooze10m: 'Snooze 10m',
+      snooze1h: 'Snooze 1h',
+      summary: 'Task reminders',
+    });
+  });
+
+  it('builds them in the selected language', () => {
+    translateService.setTranslation('de', {
+      NOTIFICATION: {
+        TASK_REMINDER: 'Aufgabenerinnerung',
+        DUE_DATE_REMINDER: 'Erinnerung an Fälligkeitsdatum',
+        DONE: 'Erledigt',
+        SNOOZE_10M: '10 Min. schlummern',
+        SNOOZE_1H: '1 Std. schlummern',
+        TASK_REMINDERS: 'Aufgabenerinnerungen',
+      },
+    });
+    translateService.use('de');
+
+    expect(buildReminderLabels(translateService)).toEqual({
+      taskReminder: 'Aufgabenerinnerung',
+      dueDateReminder: 'Erinnerung an Fälligkeitsdatum',
+      done: 'Erledigt',
+      snooze10m: '10 Min. schlummern',
+      snooze1h: '1 Std. schlummern',
+      summary: 'Aufgabenerinnerungen',
+    });
+  });
+});
 
 describe('android share helpers', () => {
   describe('buildTaskTitle', () => {
