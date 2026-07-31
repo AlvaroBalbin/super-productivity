@@ -7,6 +7,7 @@ import { LockService } from '../sync/lock.service';
 import {
   LockAcquisitionTimeoutError,
   PermanentDeferredWriteError,
+  StorageQuotaExceededError,
 } from '../core/errors/sync-errors';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
 import {
@@ -508,21 +509,16 @@ export class OperationLogEffects implements DeferredLocalActionsPort {
    * Checks if an error is a QuotaExceededError from IndexedDB.
    * This happens when the browser storage quota is exceeded.
    *
-   * Reachability (#8751): the store's `_handleAppendError` wraps only the
-   * standard `QuotaExceededError` name into `StorageQuotaExceededError extends
-   * Error`, which never matches here — so on Chromium the quota branch below is
-   * effectively dead and real quota failures take the generic
-   * mark-divergence-and-reload path. The two legacy spellings below are NOT
-   * wrapped, so they still arrive as raw DOMExceptions and do reach
-   * `handleQuotaExceeded`. There, `emergencyCompact()` now always returns false:
-   * it is called from the failing write's own stack, so that write is still
-   * counted pending and the phantom-change guard skips the snapshot. Net effect
-   * is the same reload prompt, just via a wasted compaction attempt. Do not
-   * "simplify" this on the assumption that quota handling is unreachable — see
-   * #9082 (delete-only emergency compaction), which is what would make freeing
-   * space possible without baking a phantom change.
+   * The store's `_handleAppendError` (and the equivalent checks at its other
+   * append sites) wraps the standard `QuotaExceededError` name into
+   * `StorageQuotaExceededError extends Error`, so that wrapper — not a
+   * DOMException — is what a real quota failure delivers here (#9082). The two
+   * legacy spellings below are NOT wrapped and still arrive raw.
    */
   private isQuotaExceededError(e: unknown): boolean {
+    if (e instanceof StorageQuotaExceededError) {
+      return true;
+    }
     if (e instanceof DOMException) {
       // Standard quota exceeded error names
       return (

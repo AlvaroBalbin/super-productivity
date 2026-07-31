@@ -11,6 +11,7 @@ import { OperationLogCompactionService } from '../persistence/operation-log-comp
 import { SnackService } from '../../core/snack/snack.service';
 import { ImmediateUploadService } from '../sync/immediate-upload.service';
 import { ActionType, OpType } from '../core/operation.types';
+import { StorageQuotaExceededError } from '../core/errors/sync-errors';
 import { PersistentAction } from '../core/persistent-action.interface';
 import { COMPACTION_THRESHOLD } from '../core/operation-log.const';
 import {
@@ -505,6 +506,29 @@ describe('OperationLogEffects', () => {
       tick(100);
       expect(mockCompactionService.emergencyCompact).toHaveBeenCalled();
       // Should have tried to append twice (initial + retry after compaction)
+      expect(mockOpLogStore.appendWithVectorClockOverwrite).toHaveBeenCalledTimes(2);
+    }));
+
+    it('should handle the wrapped quota error the store actually throws', fakeAsync(() => {
+      // The store never lets a quota DOMException through: _handleAppendError
+      // (and the other append call sites) wrap it into StorageQuotaExceededError,
+      // so this is the only quota error production can deliver here (#9082).
+      const quotaError = new StorageQuotaExceededError();
+      let callCount = 0;
+      mockOpLogStore.appendWithVectorClockOverwrite.and.callFake(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.reject(quotaError);
+        }
+        return Promise.resolve(1);
+      });
+      const action = createPersistentAction(ActionType.TASK_SHARED_UPDATE);
+      actions$ = of(action);
+
+      effects.persistOperation$.subscribe();
+
+      tick(100);
+      expect(mockCompactionService.emergencyCompact).toHaveBeenCalled();
       expect(mockOpLogStore.appendWithVectorClockOverwrite).toHaveBeenCalledTimes(2);
     }));
 

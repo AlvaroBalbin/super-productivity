@@ -8,6 +8,7 @@ import {
   SLOW_COMPACTION_THRESHOLD_MS,
 } from '../core/operation-log.const';
 import { OperationLogStoreService } from './operation-log-store.service';
+import { OperationLogEntry } from '../core/operation.types';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
 import { CURRENT_SCHEMA_VERSION } from './schema-migration.service';
 import { VectorClockService } from '../sync/vector-clock.service';
@@ -18,6 +19,31 @@ import { OperationCaptureService } from '../capture/operation-capture.service';
 import { getPhantomChangeRisk } from '../capture/phantom-change-guard.util';
 import { OperationWriteFlushService } from '../sync/operation-write-flush.service';
 import { HydrationStateService } from '../apply/hydration-state.service';
+
+/**
+ * An operation may be dropped once it is terminal (synced or rejected, with its
+ * application complete), older than the retention window, and covered by the
+ * snapshot `lastAppliedOpSeq` belongs to.
+ */
+const isPrunableOp = (
+  entry: OperationLogEntry,
+  cutoff: number,
+  lastAppliedOpSeq: number,
+): boolean => {
+  const isRejected = entry.rejectedAt !== undefined;
+  const isApplicationComplete =
+    isRejected ||
+    entry.applicationStatus === undefined ||
+    entry.applicationStatus === 'applied';
+  const terminalAt = entry.rejectedAt ?? entry.appliedAt;
+
+  return (
+    (entry.syncedAt !== undefined || isRejected) &&
+    isApplicationComplete &&
+    terminalAt < cutoff &&
+    entry.seq <= lastAppliedOpSeq // keep tail for conflict frontier
+  );
+};
 
 /**
  * Manages the compaction (garbage collection) of the operation log.
@@ -38,17 +64,26 @@ export class OperationLogCompactionService {
   private hydrationState = inject(HydrationStateService);
 
   async compact(): Promise<boolean> {
-    return this._doCompact(COMPACTION_RETENTION_MS, false);
+    return this._doCompact(COMPACTION_RETENTION_MS);
   }
 
   /**
-   * Emergency compaction triggered when storage quota is exceeded.
-   * Uses a shorter retention window (1 day instead of 7) to free more space.
-   * Returns true if compaction succeeded, false otherwise.
+   * Emergency compaction triggered when storage quota is exceeded. Deletes
+   * operations that the state cache ALREADY on disk covers, using a shorter
+   * retention window (1 day instead of 7) to free more space.
+   *
+   * Delete-only on purpose: quota handling runs from the failing write's own
+   * call stack, so live state still holds a change that no durable op
+   * represents. Snapshotting there would bake that phantom change into
+   * state_cache (#8751) — which is why the guard in _doCompact would make a
+   * snapshotting emergency compaction skip every single time (#9082). Pruning
+   * against the existing cache frees space without reading live state at all.
+   *
+   * Returns true if operations were deleted, false otherwise.
    */
   async emergencyCompact(): Promise<boolean> {
     try {
-      return await this._doCompact(EMERGENCY_COMPACTION_RETENTION_MS, true);
+      return await this._pruneOpsCoveredByStateCache(EMERGENCY_COMPACTION_RETENTION_MS);
     } catch (e) {
       OpLog.err('OperationLogCompactionService: Emergency compaction failed', e);
       return false;
@@ -56,11 +91,57 @@ export class OperationLogCompactionService {
   }
 
   /**
-   * Core compaction logic shared between regular and emergency compaction.
+   * Deletes operations the state cache on disk already covers, leaving the
+   * cache itself untouched. The seq bound comes from that cache, so an
+   * operation is only ever dropped when the snapshot replacing it is durable.
    * @param retentionMs - How long to keep synced operations (in ms)
-   * @param isEmergency - Whether this is an emergency compaction (for logging)
    */
-  private async _doCompact(retentionMs: number, isEmergency: boolean): Promise<boolean> {
+  private async _pruneOpsCoveredByStateCache(retentionMs: number): Promise<boolean> {
+    return this.lockService.request(LOCK_NAMES.OPERATION_LOG, async () => {
+      // GUARD (#9140): while this session booted via the hydration fallback,
+      // the snapshot on disk could not be loaded — the operations it covers are
+      // exactly what the next boot's recovery replays, so pruning them would
+      // destroy the last way back. Skipping is always safe (see _doCompact).
+      if (this.hydrationState.isHydrationFallbackActive()) {
+        OpLog.warn(
+          'OperationLogCompactionService: Skipping emergency compaction — hydration fallback recovery active (#9140)',
+        );
+        return false;
+      }
+
+      const stateCache = await this.opLogStore.loadStateCache();
+      if (!stateCache) {
+        OpLog.warn(
+          'OperationLogCompactionService: Skipping emergency compaction — no state cache to prune against',
+        );
+        return false;
+      }
+
+      const cutoff = Date.now() - retentionMs;
+      let deletedCount = 0;
+      await this.opLogStore.deleteOpsWhere((entry) => {
+        const isPrunable = isPrunableOp(entry, cutoff, stateCache.lastAppliedOpSeq);
+        if (isPrunable) {
+          deletedCount++;
+        }
+        return isPrunable;
+      });
+
+      OpLog.normal('OperationLogCompactionService: Emergency compaction completed', {
+        deletedCount,
+      });
+
+      // Nothing freed means the retry would just hit the quota again.
+      return deletedCount > 0;
+    });
+  }
+
+  /**
+   * Core compaction logic: snapshots the live state and prunes the operations
+   * it covers.
+   * @param retentionMs - How long to keep synced operations (in ms)
+   */
+  private async _doCompact(retentionMs: number): Promise<boolean> {
     // Fast-path (re-checked inside the lock via getPhantomChangeRisk): the
     // divergence flag is sticky for the session, so once set every attempt
     // would skip anyway — avoid the cross-tab lock churn, since a compact()
@@ -73,13 +154,12 @@ export class OperationLogCompactionService {
     }
     const compactExclusively = async (): Promise<boolean> => {
       const startTime = Date.now();
-      const label = isEmergency ? 'emergency ' : '';
 
       // A snapshot must never advance past remote operations whose reducers have
       // not committed yet. Otherwise restart hydration would treat those ops as
       // covered by the snapshot even though their state is missing from it.
       const pendingRemoteOps = await this.opLogStore.getPendingRemoteOps();
-      this.checkCompactionTimeout(startTime, `${label}pending operation check`);
+      this.checkCompactionTimeout(startTime, 'pending operation check');
       if (pendingRemoteOps.length > 0) {
         OpLog.warn(
           'OperationLogCompactionService: Skipping compaction — remote reducer work is pending',
@@ -108,14 +188,13 @@ export class OperationLogCompactionService {
       // Skipping is always safe: the op-log stays the source of truth, and
       // compaction re-runs once writes settle / the deferred drain succeeds /
       // the user reloads after an unrecovered failure (the sticky snackbar
-      // asks for exactly that). Note the quota corollary: emergency compaction is
-      // invoked while the failing write is still pending, so it skips here
-      // deterministically — freeing space at that moment is impossible
-      // without baking that write's phantom change.
+      // asks for exactly that). Quota recovery cannot wait for that, which is
+      // why it prunes against the existing cache instead of coming through
+      // here (see emergencyCompact).
       const phantomRisk = getPhantomChangeRisk(this.operationCapture);
       if (phantomRisk) {
         OpLog.warn(
-          `OperationLogCompactionService: Skipping ${label}compaction — ${phantomRisk} (#8751)`,
+          `OperationLogCompactionService: Skipping compaction — ${phantomRisk} (#8751)`,
         );
         return false;
       }
@@ -128,14 +207,14 @@ export class OperationLogCompactionService {
       // see the #7892 note below; pruning resumes after the next clean boot.
       if (this.hydrationState.isHydrationFallbackActive()) {
         OpLog.warn(
-          `OperationLogCompactionService: Skipping ${label}compaction — hydration fallback recovery active (#9140)`,
+          'OperationLogCompactionService: Skipping compaction — hydration fallback recovery active (#9140)',
         );
         return false;
       }
 
       // 1. Get current state from NgRx store
       const currentState = this.stateSnapshot.getStateSnapshotForOperationLog();
-      this.checkCompactionTimeout(startTime, `${label}state snapshot`);
+      this.checkCompactionTimeout(startTime, 'state snapshot');
 
       // GUARD (#7892): never compact against an empty/degraded state. Compaction
       // both writes the state cache AND deletes old synced ops — if the live
@@ -159,7 +238,7 @@ export class OperationLogCompactionService {
       // 2. Get current vector clock (max of all ops); pruning happens inside
       // saveStateCache (store-owned, #9096)
       const currentVectorClock = await this.vectorClockService.getCurrentVectorClock();
-      this.checkCompactionTimeout(startTime, `${label}vector clock`);
+      this.checkCompactionTimeout(startTime, 'vector clock');
 
       // 3. Get lastSeq IMMEDIATELY before writing cache to minimize race window
       // This ensures new ops written after this point have seq > lastSeq
@@ -188,29 +267,16 @@ export class OperationLogCompactionService {
       // 7. Delete old terminal operations (keep recent for conflict resolution)
       const cutoff = Date.now() - retentionMs;
 
-      await this.opLogStore.deleteOpsWhere((entry) => {
-        const isRejected = entry.rejectedAt !== undefined;
-        const isApplicationComplete =
-          isRejected ||
-          entry.applicationStatus === undefined ||
-          entry.applicationStatus === 'applied';
-        const terminalAt = entry.rejectedAt ?? entry.appliedAt;
+      await this.opLogStore.deleteOpsWhere((entry) =>
+        isPrunableOp(entry, cutoff, lastSeq),
+      );
 
-        return (
-          (entry.syncedAt !== undefined || isRejected) &&
-          isApplicationComplete &&
-          terminalAt < cutoff &&
-          entry.seq <= lastSeq // keep tail for conflict frontier
-        );
-      });
-
-      // Log metrics for slow compaction or emergency compaction
+      // Log metrics for slow compaction
       const totalDuration = Date.now() - startTime;
-      if (totalDuration > SLOW_COMPACTION_THRESHOLD_MS || isEmergency) {
+      if (totalDuration > SLOW_COMPACTION_THRESHOLD_MS) {
         OpLog.normal('OperationLogCompactionService: Compaction completed', {
           durationMs: totalDuration,
           entityCount: snapshotEntityKeys.length,
-          isEmergency,
         });
       }
 
@@ -220,15 +286,8 @@ export class OperationLogCompactionService {
     // #8469: drain the capture pipeline before capturing so no action can be
     // dispatched-but-unsequenced at the state read — otherwise its effect is
     // baked into the cache while its seq lands after lastAppliedOpSeq, and the
-    // next boot's tail replay double-applies it. Emergency compaction is
-    // invoked from the failing write's own call stack (quota handling), where
-    // that write's pending-counter entry is still elevated — flushing there
-    // would wait on ourselves until the flush timeout and break quota
-    // recovery, so it keeps the bare lock and accepts the residual re-replay
-    // window.
-    return isEmergency
-      ? this.lockService.request(LOCK_NAMES.OPERATION_LOG, compactExclusively)
-      : this.writeFlushService.flushThenRunExclusive(compactExclusively);
+    // next boot's tail replay double-applies it.
+    return this.writeFlushService.flushThenRunExclusive(compactExclusively);
   }
 
   /**
