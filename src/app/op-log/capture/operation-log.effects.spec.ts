@@ -11,6 +11,7 @@ import { OperationLogCompactionService } from '../persistence/operation-log-comp
 import { SnackService } from '../../core/snack/snack.service';
 import { ImmediateUploadService } from '../sync/immediate-upload.service';
 import { ActionType, OpType } from '../core/operation.types';
+import { StorageQuotaExceededError } from '../core/errors/sync-errors';
 import { PersistentAction } from '../core/persistent-action.interface';
 import { COMPACTION_THRESHOLD } from '../core/operation-log.const';
 import {
@@ -486,6 +487,35 @@ describe('OperationLogEffects', () => {
       });
     });
 
+    it('should handle the wrapped quota error the store actually throws (#9082)', fakeAsync(() => {
+      // The store never lets a quota DOMException through — _handleAppendError
+      // wraps it into StorageQuotaExceededError (extends Error). Matching only
+      // DOMException made emergency compaction and the retry unreachable in
+      // production, so a real quota failure fell through to the generic
+      // persist-failed branch.
+      let callCount = 0;
+      mockOpLogStore.appendWithVectorClockOverwrite.and.callFake(() => {
+        callCount++;
+        return callCount === 1
+          ? Promise.reject(new StorageQuotaExceededError())
+          : Promise.resolve(1);
+      });
+      const action = createPersistentAction(ActionType.TASK_SHARED_UPDATE);
+      actions$ = of(action);
+
+      effects.persistOperation$.subscribe();
+
+      tick(100);
+      expect(mockCompactionService.emergencyCompact).toHaveBeenCalled();
+      expect(mockOpLogStore.appendWithVectorClockOverwrite).toHaveBeenCalledTimes(2);
+      expect(mockSnackService.open).toHaveBeenCalledWith(
+        jasmine.objectContaining({
+          type: 'SUCCESS',
+          msg: T.F.SYNC.S.STORAGE_RECOVERED_AFTER_COMPACTION,
+        }),
+      );
+    }));
+
     it('should handle quota exceeded error with emergency compaction and retry', fakeAsync(() => {
       const quotaError = new DOMException('Quota exceeded', 'QuotaExceededError');
       // First call fails with quota error, second call (retry) succeeds
@@ -772,11 +802,9 @@ describe('OperationLogEffects', () => {
     });
 
     it('should NOT mark a divergence when a quota failure recovers via emergency compaction', fakeAsync(() => {
-      // Firefox's spelling on purpose: the store wraps the standard
-      // 'QuotaExceededError' name into StorageQuotaExceededError (a plain
-      // Error), which never matches isQuotaExceededError's DOMException check,
-      // so only the legacy spellings actually reach the quota-recovery path
-      // this test covers. See isQuotaExceededError's docblock.
+      // Firefox's spelling on purpose: it reaches the quota-recovery path as a
+      // raw DOMException, unlike the standard name the store wraps into
+      // StorageQuotaExceededError (covered above).
       const quotaError = new DOMException('Quota exceeded', 'NS_ERROR_DOM_QUOTA_REACHED');
       let callCount = 0;
       mockOpLogStore.appendWithVectorClockOverwrite.and.callFake(() => {

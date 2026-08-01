@@ -57,6 +57,7 @@ describe('OperationLogCompactionService', () => {
       'resetCompactionCounter',
       'deleteOpsWhere',
       'getPendingRemoteOps',
+      'loadStateCache',
     ]);
     mockLockService = jasmine.createSpyObj('LockService', ['request']);
     mockStateSnapshot = jasmine.createSpyObj('StateSnapshotService', [
@@ -81,6 +82,12 @@ describe('OperationLogCompactionService', () => {
     mockOpLogStore.resetCompactionCounter.and.returnValue(Promise.resolve());
     mockOpLogStore.deleteOpsWhere.and.returnValue(Promise.resolve());
     mockOpLogStore.getPendingRemoteOps.and.resolveTo([]);
+    mockOpLogStore.loadStateCache.and.resolveTo({
+      state: mockState,
+      lastAppliedOpSeq: 100,
+      vectorClock: mockVectorClock,
+      compactedAt: Date.now(),
+    });
     mockStateSnapshot.getStateSnapshot.and.returnValue(mockState);
     mockStateSnapshot.getStateSnapshotForOperationLog.and.callFake(() =>
       mockStateSnapshot.getStateSnapshot(),
@@ -146,12 +153,14 @@ describe('OperationLogCompactionService', () => {
     });
 
     it('should also block emergency compaction while hydration fallback recovery is active', async () => {
+      // The snapshot on disk could not be read this boot, so the ops it covers
+      // are the only readable copy of that data — pruning them would lose it.
       TestBed.inject(HydrationStateService).setHydrationFallbackActive(true);
 
       const result = await service.emergencyCompact();
 
       expect(result).toBe(false);
-      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+      expect(mockOpLogStore.deleteOpsWhere).not.toHaveBeenCalled();
     });
 
     it('should log metrics if compaction is slow', async () => {
@@ -174,7 +183,6 @@ describe('OperationLogCompactionService', () => {
         'OperationLogCompactionService: Compaction completed',
         jasmine.objectContaining({
           durationMs: jasmine.any(Number),
-          isEmergency: false,
         }),
       );
       const args = (OpLog.normal as jasmine.Spy).calls.mostRecent().args;
@@ -522,39 +530,69 @@ describe('OperationLogCompactionService', () => {
       await service.emergencyCompact();
 
       expect(OpLog.normal).toHaveBeenCalledWith(
-        'OperationLogCompactionService: Compaction completed',
+        'OperationLogCompactionService: Emergency compaction completed',
         jasmine.objectContaining({
           isEmergency: true,
         }),
       );
     });
 
-    it('should return false when compaction fails', async () => {
-      mockOpLogStore.saveStateCache.and.rejectWith(new Error('Storage full'));
+    it('should return false when the prune fails', async () => {
+      mockOpLogStore.deleteOpsWhere.and.rejectWith(new Error('Storage full'));
 
       const result = await service.emergencyCompact();
 
       expect(result).toBeFalse();
     });
 
-    it('should return false when pending reducer work makes compaction skip', async () => {
-      mockOpLogStore.getPendingRemoteOps.and.resolveTo([
-        {
-          seq: 1,
-          op: {} as never,
-          appliedAt: Date.now(),
-          source: 'remote',
-          applicationStatus: 'pending',
-        },
-      ]);
+    it('should return false when there is no state cache to prune against', async () => {
+      // Without a snapshot the log is the only copy of the state — nothing is
+      // safely deletable, so the caller must not treat this as recovery.
+      mockOpLogStore.loadStateCache.and.resolveTo(null);
 
-      expect(await service.emergencyCompact()).toBeFalse();
+      const result = await service.emergencyCompact();
+
+      expect(result).toBeFalse();
+      expect(mockOpLogStore.deleteOpsWhere).not.toHaveBeenCalled();
     });
 
-    it('should return false when the empty-state safety guard skips compaction', async () => {
-      mockStateSnapshot.getStateSnapshot.and.returnValue({} as never);
+    it('should prune against the existing cache without writing a new snapshot', async () => {
+      // Delete-only (#9082): emergency compaction runs from the failing
+      // write's own stack, so a fresh snapshot would either be skipped by the
+      // phantom-change guard or bake that write's phantom change into
+      // state_cache. Freeing space needs neither.
+      await service.emergencyCompact();
 
-      expect(await service.emergencyCompact()).toBeFalse();
+      expect(mockOpLogStore.deleteOpsWhere).toHaveBeenCalled();
+      expect(mockStateSnapshot.getStateSnapshotForOperationLog).not.toHaveBeenCalled();
+      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+      expect(mockOpLogStore.resetCompactionCounter).not.toHaveBeenCalled();
+    });
+
+    it('should keep operations the existing cache does not cover yet', async () => {
+      mockOpLogStore.loadStateCache.and.resolveTo({
+        state: mockState,
+        lastAppliedOpSeq: 40,
+        vectorClock: mockVectorClock,
+        compactedAt: Date.now(),
+      });
+      let capturedFilter: ((entry: OperationLogEntry) => boolean) | undefined;
+      mockOpLogStore.deleteOpsWhere.and.callFake(async (filterFn) => {
+        capturedFilter = filterFn;
+      });
+
+      await service.emergencyCompact();
+
+      const twoDaysAgo = Date.now() - 2 * MS_PER_DAY;
+      const entry: OperationLogEntry = {
+        seq: 50,
+        op: {} as any,
+        appliedAt: twoDaysAgo,
+        source: 'remote',
+        syncedAt: twoDaysAgo,
+      };
+
+      expect(capturedFilter!(entry)).toBeFalse();
     });
 
     it('should use shorter retention window than regular compaction', async () => {
@@ -618,23 +656,12 @@ describe('OperationLogCompactionService', () => {
     });
 
     it('should catch and log errors without throwing', async () => {
-      mockOpLogStore.getLastSeq.and.rejectWith(new Error('Database corrupted'));
+      mockOpLogStore.loadStateCache.and.rejectWith(new Error('Database corrupted'));
 
       // Should not throw, just return false
       const result = await service.emergencyCompact();
 
       expect(result).toBeFalse();
-    });
-
-    it('should complete all phases during emergency compaction', async () => {
-      await service.emergencyCompact();
-
-      expect(mockStateSnapshot.getStateSnapshot).toHaveBeenCalled();
-      expect(mockVectorClockService.getCurrentVectorClock).toHaveBeenCalled();
-      expect(mockOpLogStore.getLastSeq).toHaveBeenCalled();
-      expect(mockOpLogStore.saveStateCache).toHaveBeenCalled();
-      expect(mockOpLogStore.resetCompactionCounter).toHaveBeenCalled();
-      expect(mockOpLogStore.deleteOpsWhere).toHaveBeenCalled();
     });
   });
 
@@ -699,13 +726,18 @@ describe('OperationLogCompactionService', () => {
       }
     });
 
-    it('emergencyCompact() should skip when writes are pending', async () => {
+    it('emergencyCompact() should still free space while writes are pending', async () => {
+      // #9082: quota handling calls this from the failing write's own stack, so
+      // there is ALWAYS a pending write here. Skipping on that (as a snapshot
+      // pass must) made quota recovery unreachable; the delete-only pass has
+      // nothing to bake in, so it runs.
       captureService.incrementPending(FAKE_PENDING_ACTION); // never drained
       bufferDeferredAction(FAKE_PENDING_ACTION);
       try {
         const result = await service.emergencyCompact();
 
-        expect(result).toBeFalse();
+        expect(result).toBeTrue();
+        expect(mockOpLogStore.deleteOpsWhere).toHaveBeenCalled();
         expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
       } finally {
         clearDeferredActions();
@@ -744,13 +776,15 @@ describe('OperationLogCompactionService', () => {
       expect(mockOpLogStore.resetCompactionCounter).not.toHaveBeenCalled();
     });
 
-    it('should skip emergency compaction too after an unrecovered persist failure', async () => {
-      // Quota recovery must not become a back door that bakes the phantom in.
+    it('should never snapshot during emergency compaction, even after an unrecovered persist failure', async () => {
+      // Quota recovery must not become a back door that bakes the phantom in —
+      // it prunes against the snapshot already on disk and writes none itself,
+      // so it stays available exactly when the app needs the space.
       spyOn(captureService, 'hasUnrecoveredPersistFailure').and.returnValue(true);
 
       const result = await service.emergencyCompact();
 
-      expect(result).toBeFalse();
+      expect(result).toBeTrue();
       expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
     });
 
