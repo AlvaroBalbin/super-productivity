@@ -81,3 +81,45 @@ describe('Azure DevOps Plugin - getNewIssuesForBacklog', () => {
     expect(query).toContain(`[System.AssignedTo] = @Me`);
   });
 });
+
+describe('Azure DevOps Plugin - work item detail fetch', () => {
+  it('fetches details via workitemsbatch with errorPolicy Omit, so a process template missing a requested field (e.g. Scrum has no DueDate) does not fail the whole request', async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const http = {
+      post: vi.fn(async (url: string, body: unknown) => {
+        calls.push({ url, body });
+        if (url.includes('/wiql')) {
+          return { workItems: [{ id: 42 }] };
+        }
+        // errorPolicy 'Omit' just leaves the field off the work item instead
+        // of the request failing with TF51535.
+        return {
+          value: [
+            {
+              id: 42,
+              fields: {
+                'System.Id': 42,
+                'System.Title': 'Do the thing',
+                'System.WorkItemType': 'Product Backlog Item',
+                'System.State': 'New',
+              },
+            },
+          ],
+        };
+      }),
+      get: vi.fn(),
+    } as unknown as PluginHttp;
+
+    const results = await definition.getNewIssuesForBacklog!(
+      { project: 'MyProject' },
+      http,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].due).toBe('');
+    const batchCall = calls.find((c) => c.url.includes('workitemsbatch'));
+    expect(batchCall).toBeDefined();
+    expect(batchCall!.body).toMatchObject({ ids: [42], errorPolicy: 'Omit' });
+    expect(http.get).not.toHaveBeenCalled();
+  });
+});

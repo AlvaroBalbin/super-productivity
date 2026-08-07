@@ -30,7 +30,7 @@ const WORK_ITEM_FIELDS = [
   'Microsoft.VSTS.Scheduling.DueDate',
   'Microsoft.VSTS.Scheduling.TargetDate',
   'Microsoft.VSTS.Scheduling.StartDate',
-].join(',');
+];
 
 // Azure DevOps "done" state categories. The backlog query excludes
 // Closed/Done/Removed; Resolved is the Agile resolved-but-not-closed state.
@@ -171,15 +171,17 @@ const runWiqlAndFetch = async (
     return [];
   }
   const ids = refs.map((r) => r.id).slice(0, limit);
-  const res = await http.get<AzureWorkItemsResponse>(
-    `${baseUrl}/${cfg.project}/_apis/wit/workitems`,
+  // The batch endpoint with errorPolicy 'Omit' is used instead of the plain
+  // workitems GET: some process templates (e.g. Scrum) don't define every
+  // field in WORK_ITEM_FIELDS (like Microsoft.VSTS.Scheduling.DueDate), and
+  // the GET endpoint fails the whole request with TF51535 if a requested
+  // field doesn't exist. 'Omit' just leaves such fields off the work item.
+  const res = await http.post<AzureWorkItemsResponse>(
+    `${baseUrl}/${cfg.project}/_apis/wit/workitemsbatch?api-version=${API_VERSION}`,
     {
-      params: {
-        ids: ids.join(','),
-        fields: WORK_ITEM_FIELDS,
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        'api-version': API_VERSION,
-      },
+      ids,
+      fields: WORK_ITEM_FIELDS,
+      errorPolicy: 'Omit',
     },
   );
   return res?.value || [];
