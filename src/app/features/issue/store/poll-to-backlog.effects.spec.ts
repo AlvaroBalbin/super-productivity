@@ -10,8 +10,9 @@ import { setActiveWorkContext } from '../../work-context/store/work-context.acti
 import { selectEnabledIssueProviders } from './issue-provider.selectors';
 import { SyncTriggerService } from '../../../imex/sync/sync-trigger.service';
 import { SnackService } from '../../../core/snack/snack.service';
-import { JIRA_TYPE } from '../issue.const';
+import { JIRA_TYPE, ISSUE_PROVIDER_DEFAULT_COMMON_CFG } from '../issue.const';
 import { IssueProvider } from '../issue.model';
+import { DEFAULT_CALDAV_CFG } from '../providers/caldav/caldav.const';
 
 describe('PollToBacklogEffects', () => {
   let effects: PollToBacklogEffects;
@@ -169,6 +170,43 @@ describe('PollToBacklogEffects', () => {
       expect(
         issueServiceSpy.checkAndImportNewIssuesToBacklogForProject,
       ).not.toHaveBeenCalled();
+    }));
+
+    // Regression test for #8275: a freshly set-up CalDAV provider connected
+    // fine but never showed any tasks because isAutoAddToBacklog defaulted to
+    // false, so this effect's provider filter silently dropped it — the exact
+    // shape of the config the setup dialog builds when a user only fills in
+    // credentials, a resource and a default project (the documented steps).
+    it('should poll a freshly configured CalDAV provider once a default project is set', fakeAsync(() => {
+      const provider = {
+        ...ISSUE_PROVIDER_DEFAULT_COMMON_CFG,
+        ...DEFAULT_CALDAV_CFG,
+        id: 'caldav-1',
+        issueProviderKey: 'CALDAV',
+        isEnabled: true,
+        defaultProjectId: 'project-1',
+      } as unknown as IssueProvider;
+
+      store.overrideSelector(selectEnabledIssueProviders, [provider]);
+      store.refreshState();
+
+      const actionsSubject = new Subject<any>();
+      actions$ = actionsSubject.asObservable();
+
+      effects.pollNewIssuesToBacklog$.subscribe();
+
+      actionsSubject.next(
+        setActiveWorkContext({
+          activeType: WorkContextType.PROJECT,
+          activeId: 'project-1',
+        }),
+      );
+
+      tick(10001);
+
+      expect(
+        issueServiceSpy.checkAndImportNewIssuesToBacklogForProject,
+      ).toHaveBeenCalledWith('CALDAV', 'caldav-1', false);
     }));
   });
 

@@ -9,6 +9,10 @@ export const DEFAULT_CALDAV_CFG: CaldavCfg = {
   username: null,
   password: null,
   categoryFilter: null,
+  // A CalDAV resource is a single, user-chosen calendar rather than a
+  // searchable tracker, so tasks are expected to sync into the backlog
+  // automatically once a default project is set (mirrors Plainspace).
+  isAutoAddToBacklog: true,
   twoWaySync: {
     isDone: 'pullOnly',
     title: 'pullOnly',
