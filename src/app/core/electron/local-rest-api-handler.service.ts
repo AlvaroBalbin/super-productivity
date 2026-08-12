@@ -47,14 +47,39 @@ const REJECTED_TASK_FIELDS = ['parentId', 'subTaskIds'] as const;
  */
 const SUBTASK_INHERITED_FIELDS = ['projectId', 'tagIds'] as const;
 
-const pickAllowedFields = (body: Record<string, unknown>): Partial<Task> => {
+type PickedTaskFields = Partial<Task> & { plannedAt?: number };
+
+const pickAllowedFields = (body: Record<string, unknown>): PickedTaskFields => {
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(body)) {
     if (ALLOWED_TASK_FIELDS.has(key)) {
       result[key] = body[key];
     }
   }
-  return result as Partial<Task>;
+  return result as PickedTaskFields;
+};
+
+/**
+ * `plannedAt` has no matching property on Task — the model's actual
+ * scheduling field (read by isTaskInToday below and TaskService.scheduleTask)
+ * is `dueWithTime` — so passing it straight through silently no-ops. Translate
+ * it to the real field here.
+ */
+const translatePlannedAt = (
+  fields: PickedTaskFields,
+): { ok: true; fields: Partial<Task> } | { ok: false; error: string } => {
+  const { plannedAt, ...rest } = fields;
+  if (plannedAt === undefined) {
+    return { ok: true, fields: rest };
+  }
+  if ('dueWithTime' in fields || 'dueDay' in fields) {
+    return {
+      ok: false,
+      error:
+        'plannedAt cannot be combined with dueWithTime or dueDay in the same request',
+    };
+  }
+  return { ok: true, fields: { ...rest, dueWithTime: plannedAt } };
 };
 
 /**
@@ -87,7 +112,7 @@ type FieldTypeError = { path: string; expected: string };
  * reject bad input with a clean 400 before anything is dispatched.
  */
 const validateWritableFields = (
-  fields: Partial<Task>,
+  fields: PickedTaskFields,
 ): { ok: true } | { ok: false; errors: FieldTypeError[] } => {
   const result = typia.validate<WritableTaskFields>(fields);
   if (result.success) {
@@ -392,9 +417,9 @@ export class LocalRestApiHandlerService {
     }
 
     const title = body.title.trim();
-    const additionalFields = pickAllowedFields(body);
+    const pickedFields = pickAllowedFields(body);
 
-    const validation = validateWritableFields(additionalFields);
+    const validation = validateWritableFields(pickedFields);
     if (!validation.ok) {
       return createErrorResponse(
         requestId,
@@ -404,6 +429,12 @@ export class LocalRestApiHandlerService {
         validation.errors,
       );
     }
+
+    const translated = translatePlannedAt(pickedFields);
+    if (!translated.ok) {
+      return createErrorResponse(requestId, 400, 'INVALID_INPUT', translated.error);
+    }
+    const additionalFields = translated.fields;
 
     if ('parentId' in body) {
       if (typeof body.parentId !== 'string' || !body.parentId) {
@@ -495,8 +526,8 @@ export class LocalRestApiHandlerService {
           );
         }
 
-        const changes = pickAllowedFields(body);
-        const validation = validateWritableFields(changes);
+        const pickedFields = pickAllowedFields(body);
+        const validation = validateWritableFields(pickedFields);
         if (!validation.ok) {
           return createErrorResponse(
             requestId,
@@ -506,6 +537,12 @@ export class LocalRestApiHandlerService {
             validation.errors,
           );
         }
+
+        const translated = translatePlannedAt(pickedFields);
+        if (!translated.ok) {
+          return createErrorResponse(requestId, 400, 'INVALID_INPUT', translated.error);
+        }
+        const changes = translated.fields;
 
         const task = await this._getTaskById(taskId);
         if (!task) {

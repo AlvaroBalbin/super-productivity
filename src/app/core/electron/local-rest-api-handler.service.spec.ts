@@ -556,6 +556,37 @@ describe('LocalRestApiHandlerService', () => {
         expect(taskServiceMock.add).not.toHaveBeenCalled();
       });
 
+      it('should translate plannedAt into dueWithTime, the field the app actually schedules from', async () => {
+        Object.defineProperty(taskServiceMock, 'getByIdOnce$', {
+          get: () => (_id: string) => of(createMockTask('new-task-id')),
+        });
+        const plannedAt = new Date(2026, 4, 13, 10, 0).getTime();
+
+        await sendRequestAndWait(
+          createRequest('POST', '/tasks', {
+            body: { title: 'New Task', plannedAt },
+          }),
+        );
+
+        expect(taskServiceMock.add).toHaveBeenCalledWith('New Task', false, {
+          title: 'New Task',
+          dueWithTime: plannedAt,
+        });
+      });
+
+      it('should return 400 when plannedAt is combined with dueWithTime', async () => {
+        const response = await sendRequestAndWait(
+          createRequest('POST', '/tasks', {
+            body: { title: 'New Task', plannedAt: Date.now(), dueWithTime: Date.now() },
+          }),
+        );
+
+        expect(response.body.ok).toBe(false);
+        expect(response.status).toBe(400);
+        expect((response.body as any).error.code).toBe('INVALID_INPUT');
+        expect(taskServiceMock.add).not.toHaveBeenCalled();
+      });
+
       it('should reject subTaskIds in body with 400', async () => {
         const response = await sendRequestAndWait(
           createRequest('POST', '/tasks', {
@@ -836,6 +867,43 @@ describe('LocalRestApiHandlerService', () => {
           timeEstimate: 1000,
           isDone: true,
         });
+      });
+
+      it('should translate plannedAt into dueWithTime, the field the app actually schedules from', async () => {
+        const mockTask = createMockTask('task-1');
+        Object.defineProperty(taskServiceMock, 'getByIdOnce$', {
+          get: () => (_id: string) => of(mockTask),
+        });
+        const plannedAt = new Date(2026, 4, 13, 10, 0).getTime();
+
+        const response = await sendRequestAndWait(
+          createRequest('PATCH', '/tasks/task-1', {
+            body: { plannedAt },
+          }),
+        );
+
+        expect(response.body.ok).toBe(true);
+        expect(taskServiceMock.update).toHaveBeenCalledWith('task-1', {
+          dueWithTime: plannedAt,
+        });
+      });
+
+      it('should return 400 when plannedAt is combined with dueDay', async () => {
+        const mockTask = createMockTask('task-1');
+        Object.defineProperty(taskServiceMock, 'getByIdOnce$', {
+          get: () => (_id: string) => of(mockTask),
+        });
+
+        const response = await sendRequestAndWait(
+          createRequest('PATCH', '/tasks/task-1', {
+            body: { plannedAt: Date.now(), dueDay: '2026-05-13' },
+          }),
+        );
+
+        expect(response.body.ok).toBe(false);
+        expect(response.status).toBe(400);
+        expect((response.body as any).error.code).toBe('INVALID_INPUT');
+        expect(taskServiceMock.update).not.toHaveBeenCalled();
       });
 
       it('should update projectId together with other fields in one dispatch', async () => {
