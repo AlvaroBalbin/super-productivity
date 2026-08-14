@@ -86,7 +86,7 @@ export const SuperSyncOperationSchema = z.object({
 // structural types and fields that ValidationService does not handle strict,
 // but defer semantic operation validation to the server so one malformed op
 // cannot reject and stall every valid sibling in the batch. Download/response
-// schemas remain strict.
+// schemas remain strict, aside from schemaVersion (see SuperSyncOperationResponseSchema).
 const SuperSyncUploadOperationSchema = SuperSyncOperationSchema.extend({
   id: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH),
   clientId: z.string().max(SUPER_SYNC_MAX_INVALID_FIELD_TRANSPORT_LENGTH),
@@ -139,7 +139,14 @@ export const SuperSyncUploadSnapshotRequestSchema = z
     }
   });
 
-export const SuperSyncOperationResponseSchema = SuperSyncOperationSchema.passthrough();
+// Download/piggyback responses replay ops the server already accepted, including
+// legacy rows stored before the server enforced integer schemaVersion values.
+// Range-check like the historical server contract, but leave the integer check
+// to the client's per-operation version gate so a single fractional legacy op
+// blocks only itself instead of failing the whole response closed.
+export const SuperSyncOperationResponseSchema = SuperSyncOperationSchema.extend({
+  schemaVersion: z.number().min(1).max(100),
+}).passthrough();
 
 export const SuperSyncServerOperationSchema = z
   .object({

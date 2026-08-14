@@ -115,6 +115,32 @@ describe('response-validators', () => {
       expect('snapshotState' in validated).toBeFalse();
     });
 
+    it('should accept a legacy op with a non-integer schemaVersion', () => {
+      const response = {
+        ops: [
+          {
+            serverSeq: 1,
+            receivedAt: 1234567890,
+            op: {
+              id: 'op-1',
+              clientId: 'client_1',
+              actionType: '[Task] Add task',
+              opType: 'CRT',
+              entityType: 'TASK',
+              payload: { title: 'Test' },
+              vectorClock: { client_1: 1 },
+              timestamp: 1234567890,
+              schemaVersion: 1.5,
+            },
+          },
+        ],
+        hasMore: false,
+        latestSeq: 1,
+      };
+
+      expect(() => validateOpDownloadResponse(response)).not.toThrow();
+    });
+
     it('should throw if not an object', () => {
       expect(() => validateOpDownloadResponse(undefined)).toThrow();
     });

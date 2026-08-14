@@ -5,6 +5,7 @@ import {
   SuperSyncDownloadOpsQuerySchema,
   SuperSyncDownloadOpsResponseSchema,
   SuperSyncOperationSchema,
+  SuperSyncServerOperationSchema,
   SuperSyncUploadOpsRequestSchema,
   SuperSyncUploadSnapshotRequestSchema,
 } from '../src/supersync-http-contract';
@@ -218,6 +219,26 @@ describe('SuperSync HTTP contract schemas', () => {
     });
 
     expect(parsed.repairBaseServerSeq).toBe(42);
+  });
+
+  it('accepts a legacy non-integer schemaVersion on downloaded operations', () => {
+    const parsed = SuperSyncServerOperationSchema.parse({
+      serverSeq: 1,
+      op: { ...createValidOperation(), schemaVersion: 1.5 },
+      receivedAt: 1234567890,
+    });
+
+    expect(parsed.op.schemaVersion).toBe(1.5);
+  });
+
+  it('rejects an out-of-range schemaVersion on downloaded operations', () => {
+    expect(() =>
+      SuperSyncServerOperationSchema.parse({
+        serverSeq: 1,
+        op: { ...createValidOperation(), schemaVersion: 101 },
+        receivedAt: 1234567890,
+      }),
+    ).toThrow();
   });
 
   it('preserves causal repair capability negotiation on downloads', () => {
