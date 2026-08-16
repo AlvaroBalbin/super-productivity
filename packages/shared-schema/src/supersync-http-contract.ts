@@ -139,7 +139,15 @@ export const SuperSyncUploadSnapshotRequestSchema = z
     }
   });
 
-export const SuperSyncOperationResponseSchema = SuperSyncOperationSchema.passthrough();
+// Response envelope for server-echoed operations (download page, upload
+// piggyback). Master-era servers range-checked schemaVersion 1..100 but did
+// not enforce integers, so a legacy stored op can carry a fractional value.
+// Parse leniently here and let the per-op version gate in
+// RemoteOpsProcessingService classify it (INVALID_SCHEMA_VERSION), rather
+// than hard-failing the whole page.
+export const SuperSyncOperationResponseSchema = SuperSyncOperationSchema.extend({
+  schemaVersion: z.number(),
+}).passthrough();
 
 export const SuperSyncServerOperationSchema = z
   .object({

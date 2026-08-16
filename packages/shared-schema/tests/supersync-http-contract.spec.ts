@@ -220,6 +220,22 @@ describe('SuperSync HTTP contract schemas', () => {
     expect(parsed.repairBaseServerSeq).toBe(42);
   });
 
+  it('parses legacy non-integer operation schema versions in download responses', () => {
+    const parsed = SuperSyncDownloadOpsResponseSchema.parse({
+      ops: [
+        {
+          serverSeq: 1,
+          receivedAt: 1234567890,
+          op: { ...createValidOperation(), schemaVersion: 1.5 },
+        },
+      ],
+      hasMore: false,
+      latestSeq: 1,
+    });
+
+    expect(parsed.ops[0].op.schemaVersion).toBe(1.5);
+  });
+
   it('preserves causal repair capability negotiation on downloads', () => {
     const parsed = SuperSyncDownloadOpsResponseSchema.parse({
       ops: [],
