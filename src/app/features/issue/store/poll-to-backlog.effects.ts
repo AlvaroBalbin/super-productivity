@@ -23,6 +23,7 @@ import { getErrorTxt } from '../../../util/get-error-text';
 import { DELAY_BEFORE_ISSUE_POLLING } from '../issue.const';
 import { IssueLog } from '../../../core/log';
 import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { skipDuringSyncWindow } from '../../../util/skip-during-sync-window.operator';
 
 @Injectable()
 export class PollToBacklogEffects {
@@ -33,6 +34,7 @@ export class PollToBacklogEffects {
   private readonly _snackService = inject(SnackService);
   private readonly _store = inject(Store);
   private readonly _pluginRegistry = inject(PluginIssueProviderRegistryService);
+  private readonly _skipDuringSyncWindow = skipDuringSyncWindow<number>();
 
   pollToBacklogActions$: Observable<unknown> = this._actions$.pipe(
     ofType(setActiveWorkContext),
@@ -130,6 +132,7 @@ export class PollToBacklogEffects {
     return (
       stopOnContextSwitch ? timer$.pipe(takeUntil(this.pollToBacklogActions$)) : timer$
     ).pipe(
+      this._skipDuringSyncWindow,
       tap(() => IssueLog.log('POLL ' + provider.issueProviderKey)),
       switchMap(() =>
         from(

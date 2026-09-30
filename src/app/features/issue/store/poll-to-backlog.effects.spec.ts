@@ -13,6 +13,7 @@ import { SnackService } from '../../../core/snack/snack.service';
 import { JIRA_TYPE } from '../issue.const';
 import { IssueProvider } from '../issue.model';
 import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { HydrationStateService } from '../../../op-log/apply/hydration-state.service';
 
 describe('PollToBacklogEffects', () => {
   let effects: PollToBacklogEffects;
@@ -66,7 +67,14 @@ describe('PollToBacklogEffects', () => {
         { provide: WorkContextService, useValue: workContextServiceSpy },
         {
           provide: SyncTriggerService,
-          useValue: { afterInitialSyncDoneAndDataLoadedInitially$: of(true) },
+          useValue: {
+            afterInitialSyncDoneAndDataLoadedInitially$: of(true),
+            isInitialSyncDoneSync: () => true,
+          },
+        },
+        {
+          provide: HydrationStateService,
+          useValue: { isInSyncWindow: () => false },
         },
         {
           provide: SnackService,
