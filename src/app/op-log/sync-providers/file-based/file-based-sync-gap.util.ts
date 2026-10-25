@@ -51,6 +51,8 @@ export interface GapDetectionResult {
   reason?: string;
   /** The syncVersion regressed, but the causal state provably did not. */
   isCosmeticReset: boolean;
+  /** A seq-0 snapshot download lost this client's uploads (#10916). */
+  ownUploadsMissing: boolean;
 }
 
 /** The op-log reads {@link getOpLogBaselineClock} needs. */
@@ -94,6 +96,30 @@ export const isSnapshotBaseUnseen = (
   }
   const comparison = compareVectorClocks(snapshotBaseClock, lastSeenClock);
   return comparison === 'GREATER_THAN' || comparison === 'CONCURRENT';
+};
+
+/**
+ * Whether the remote file lost uploads this client already saw there (#10916):
+ * its own clock entry went backwards while the snapshot base is one this client
+ * has seen. A writer on a stale copy (a folder-sync tool or a server ignoring
+ * If-Match) causes this; a full-state replacement (import, repair, USE_LOCAL)
+ * writes a new base and is excluded, so it still wins silently. A file without
+ * a base (written by v19.1.0 or older) cannot tell the two apart and counts as
+ * missing: a dialog is recoverable, a silent hydration is not.
+ */
+export const areOwnUploadsMissing = (
+  remote: Pick<GapDetectionRemote, 'vectorClock' | 'snapshotBaseClock'>,
+  clientId: string | undefined,
+  lastSeenClock: VectorClock | undefined,
+): boolean => {
+  if (!clientId || !lastSeenClock) {
+    return false;
+  }
+  const lastSeenOwn = lastSeenClock[clientId] ?? 0;
+  return (
+    (remote.vectorClock[clientId] ?? 0) < lastSeenOwn &&
+    !isSnapshotBaseUnseen(remote.snapshotBaseClock, lastSeenClock)
+  );
 };
 
 /**
@@ -235,7 +261,17 @@ export const detectDownloadGap = ({
               ? 'snapshot replacement with an unseen causal base'
               : undefined;
 
-  return { needsGapDetection: reason !== undefined, reason, isCosmeticReset };
+  const ownUploadsMissing =
+    sinceSeq === 0 &&
+    hasSnapshot &&
+    areOwnUploadsMissing(remote, excludeClient, lastSeenClock);
+
+  return {
+    needsGapDetection: reason !== undefined,
+    reason,
+    isCosmeticReset,
+    ownUploadsMissing,
+  };
 };
 
 /**
