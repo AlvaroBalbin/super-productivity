@@ -254,6 +254,7 @@ export interface ElectronAPI {
     progress: number;
     progressBarMode: 'normal' | 'paused' | 'none';
   }): void;
+  setDueTaskBadge(count: number, iconDataUrl?: string): void;
 
   sendAppSettingsToElectron(globalCfg: GlobalConfigState): void;
 

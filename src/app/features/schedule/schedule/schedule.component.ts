@@ -17,6 +17,7 @@ import {
   selectEnabledIssueProviders,
 } from '../../issue/store/issue-provider.selectors';
 import { HiddenCalendarProvidersService } from '../../calendar-integration/hidden-calendar-providers.service';
+import { selectUndoneDeadlineTasksByDay } from '../../planner/store/planner.selectors';
 import {
   getIssueProviderTooltip,
   sanitizeIcalUrlForDisplay,
@@ -156,13 +157,14 @@ export class ScheduleComponent {
   };
   // Materialized once per provider-list change; method calls inside the menu
   // @for would re-run the hash and URL parsing on every change detection.
-  readonly calProviderRows = computed(() =>
-    this.enabledCalendarProviders().map((p) => ({
+  readonly calProviderRows = computed(() => {
+    const calendarColors = this.scheduleService.calendarColorByProviderId();
+    return this.enabledCalendarProviders().map((p) => ({
       id: p.id,
-      color: getCalendarProviderColor(p),
+      color: getCalendarProviderColor(p, calendarColors.get(p.id)),
       label: this.calProviderLabel(p),
-    })),
-  );
+    }));
+  });
 
   toggleCalProvider(providerId: string): void {
     this._hiddenCalendarProviders.toggle(providerId);
@@ -355,6 +357,11 @@ export class ScheduleComponent {
     const days = this.scheduleDays();
     return mapScheduleDaysToScheduleEvents(days, FH);
   });
+
+  deadlineTasksByDay = toSignal(
+    this._store.pipe(select(selectUndoneDeadlineTasksByDay)),
+    { initialValue: {} },
+  );
 
   private _workStartEndHours = toSignal(
     this._store.pipe(select(selectTimelineWorkStartEndHours)),

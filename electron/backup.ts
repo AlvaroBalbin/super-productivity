@@ -31,25 +31,27 @@ import { SimpleStoreKey } from './shared-with-frontend/simple-store.const';
 import { loadSimpleStoreAll, saveSimpleStore } from './simple-store';
 import { getWin } from './main-window';
 
-export const BACKUP_DIR = path.join(app.getPath('userData'), `backups`);
+// Resolve at use time: Electron may relocate userData after this module is imported (#11049).
+const getDefaultBackupDir = (): string => path.join(app.getPath('userData'), `backups`);
 
 /**
- * Where a virtualized MSIX package's writes to BACKUP_DIR physically land, so
+ * Where a virtualized MSIX package's writes to getDefaultBackupDir() physically land, so
  * Explorer (which runs outside the package and sees no redirection) can be
  * pointed at them. Display-oriented but not inert: `BACKUP_LOAD_DATA` below
  * also accepts it as an allow-listed read root.
  *
  * shortcut: the package family name is hardcoded and nothing in CI would notice
  * it drifting (the appx config lives in the WIN_STORE_ELECTRON_BUILDER_YML
- * secret); drift just fails the probe and we show BACKUP_DIR. Verified against
+ * secret); drift just fails the probe and we show getDefaultBackupDir(). Verified against
  * the shipped v18.15.1 appx on 2026-07-21 — it is `<Identity Name>_<PublisherId>`,
  * PublisherId being base32(SHA-256(UTF-16LE Publisher)[0..8]), so any release
  * artifact re-checks it without a Windows machine.
  */
-const BACKUP_DIR_WINSTORE = BACKUP_DIR.replace(
-  'Roaming',
-  `Local\\Packages\\53707johannesjo.SuperProductivity_ch45amy23cdv6\\LocalCache\\Roaming`,
-);
+const getBackupDirWinStore = (): string =>
+  getDefaultBackupDir().replace(
+    'Roaming',
+    `Local\\Packages\\53707johannesjo.SuperProductivity_ch45amy23cdv6\\LocalCache\\Roaming`,
+  );
 
 /**
  * The backup location to *show* the user, which is not always the one we write
@@ -59,25 +61,25 @@ const BACKUP_DIR_WINSTORE = BACKUP_DIR.replace(
  *
  * shortcut: an install that flipped from virtualized to full-trust keeps a
  * stale LocalCache dir that still wins the probe, showing real but outdated
- * backups. Accepted — restore reads BACKUP_DIR either way, so only manual
+ * backups. Accepted — restore reads getDefaultBackupDir() either way, so only manual
  * recovery is affected. Upgrade path: probe for the newest filename in
- * BACKUP_DIR (timestamps sort lexically) instead of for the directory.
+ * getDefaultBackupDir() (timestamps sort lexically) instead of for the directory.
  */
 export const getBackupDirForDisplay = async (): Promise<string> => {
   const backupDir = await getBackupDir();
   // Redirection is a property of the package's own virtualized userData, so it
   // can only ever apply to the default dir — a folder the user picked lives
   // outside the package and is written exactly where it says.
-  return backupDir === BACKUP_DIR &&
+  return backupDir === getDefaultBackupDir() &&
     process.windowsStore &&
-    existsSync(BACKUP_DIR_WINSTORE)
-    ? BACKUP_DIR_WINSTORE
+    existsSync(getBackupDirWinStore())
+    ? getBackupDirWinStore()
     : backupDir;
 };
 
 /**
  * Where automatic backups are written to and restored from: the folder the user
- * picked via `IPC.PICK_BACKUP_FOLDER`, or BACKUP_DIR while none is configured.
+ * picked via `IPC.PICK_BACKUP_FOLDER`, or getDefaultBackupDir() while none is configured.
  * The picked path is main-owned (like the sync folder path, #8228) for two
  * reasons: the renderer runs untrusted plugin code and must not be able to
  * redirect backup writes, and the folder is device-specific so it must not
@@ -86,7 +88,7 @@ export const getBackupDirForDisplay = async (): Promise<string> => {
 export const getBackupDir = async (): Promise<string> => {
   const all = await loadSimpleStoreAll();
   const raw = all[SimpleStoreKey.BACKUP_FOLDER_PATH];
-  return typeof raw === 'string' && raw.length > 0 ? raw : BACKUP_DIR;
+  return typeof raw === 'string' && raw.length > 0 ? raw : getDefaultBackupDir();
 };
 
 // Path-free (the offending path never goes back to the untrusted renderer) and
@@ -169,7 +171,7 @@ const removeStaleTmpFiles = (backupDir: string, entries: string[]): void => {
 
 const isRestorableBackupFilename = (backupDir: string, fileName: string): boolean =>
   isAutoBackupFilename(fileName) ||
-  (backupDir === BACKUP_DIR && fileName.endsWith('.json'));
+  (backupDir === getDefaultBackupDir() && fileName.endsWith('.json'));
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 export function initBackupAdapter(): void {
@@ -217,7 +219,8 @@ export function initBackupAdapter(): void {
         // Same narrowing as getBackupDirForDisplay: the Store redirection is a
         // property of the package's own userData, so it can only ever apply
         // while the default dir is in use.
-        (backupDir === BACKUP_DIR && isPathInsideDir(BACKUP_DIR_WINSTORE, backupPath));
+        (backupDir === getDefaultBackupDir() &&
+          isPathInsideDir(getBackupDirWinStore(), backupPath));
       if (!isAllowedRoot) {
         throw new Error('BACKUP_LOAD_DATA: refused path outside backup directory');
       }
@@ -258,8 +261,8 @@ export function initBackupAdapter(): void {
       // too, or picking back the very path we displayed either gets refused or
       // pins a "custom" folder to LocalCache.
       if (
-        picked === canonicalize(BACKUP_DIR) ||
-        (process.windowsStore && picked === canonicalize(BACKUP_DIR_WINSTORE))
+        picked === canonicalize(getDefaultBackupDir()) ||
+        (process.windowsStore && picked === canonicalize(getBackupDirWinStore()))
       ) {
         await saveSimpleStore(SimpleStoreKey.BACKUP_FOLDER_PATH, null);
         return picked;
@@ -337,7 +340,7 @@ async function backupData(
       // back — while every write "succeeds", so the last-backup time keeps
       // claiming they are protected. Only the default dir is created; it lives
       // in userData and is legitimately absent before the first backup.
-      if (backupDir !== BACKUP_DIR) {
+      if (backupDir !== getDefaultBackupDir()) {
         throw backupFolderGone();
       }
       mkdirSync(backupDir);

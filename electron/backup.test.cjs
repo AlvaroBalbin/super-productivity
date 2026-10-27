@@ -21,6 +21,7 @@ const BACKUP_DIR_WINSTORE = BACKUP_DIR.replace(
 
 const PICKED_DIR = path.resolve(path.join(path.sep, 'tmp', 'sp-backups'));
 
+let userDataPath;
 let existingPaths;
 let handleHandlers;
 let onHandlers;
@@ -52,7 +53,7 @@ const installMocks = () => {
   Module._load = function patchedLoad(request, parent, isMain) {
     if (request === 'electron') {
       return {
-        app: { getPath: () => USER_DATA },
+        app: { getPath: () => userDataPath },
         dialog: {
           showOpenDialog: async (win, options) => {
             openDialogOptions = options;
@@ -165,6 +166,7 @@ const loadBackupModule = () => {
 };
 
 test.beforeEach(() => {
+  userDataPath = USER_DATA;
   // The parents of the folders written to below: userData for the default
   // backup dir, and the picked folder's parent. Both always exist in the real
   // world, and mkdirSync is no longer recursive, so tests that mean "the folder
@@ -822,4 +824,33 @@ test('BACKUP rejects with a path-free error when the write fails (#10022)', asyn
       return true;
     },
   );
+});
+
+
+// Preserve upstream #11049 while retaining the configured-folder feature.
+test('backups follow a userData path changed after import (#11049)', async () => {
+  const { initBackupAdapter } = loadBackupModule();
+  userDataPath = path.join('home', 'u', 'snap', 'sp', 'common', '.config', 'sp');
+  const movedBackupDir = path.join(userDataPath, 'backups');
+  existingPaths.add(userDataPath);
+  initBackupAdapter();
+  await handleHandlers.get('BACKUP')({}, { data: { a: 1 } });
+  const newest = await handleHandlers.get('BACKUP_IS_AVAILABLE')();
+  assert.ok(existingPaths.has(movedBackupDir));
+  assert.equal(newest.folder, movedBackupDir);
+  assert.equal(path.dirname(newest.path), movedBackupDir);
+  assert.ok(writtenFiles.has(newest.path));
+  assert.deepEqual(JSON.parse(await handleHandlers.get('BACKUP_LOAD_DATA')({}, newest.path)), { a: 1 });
+});
+
+test('a configured backup folder stays selected when userData moves after import', async () => {
+  const { initBackupAdapter, getBackupDirForDisplay } = loadBackupModule();
+  simpleStore.backupFolderPath = PICKED_DIR;
+  userDataPath = path.join('home', 'u', 'snap', 'sp', 'common', '.config', 'sp');
+  existingPaths.add(PICKED_DIR);
+  initBackupAdapter();
+  await handleHandlers.get('BACKUP')({}, { data: { custom: true } });
+  const newest = await handleHandlers.get('BACKUP_IS_AVAILABLE')();
+  assert.equal(newest.folder, PICKED_DIR);
+  assert.equal(await getBackupDirForDisplay(), PICKED_DIR);
 });
